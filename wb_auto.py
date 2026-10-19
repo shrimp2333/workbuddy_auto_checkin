@@ -294,17 +294,16 @@ def run_buddy(headers, endpoint):
 # ---------------------------------------------------------------- 飞书
 
 def push_feishu(webhook, title, checkin_line, buddy_line, overall_ok):
-    """推送到飞书自定义机器人。签到与猫猫状态分开成行。"""
+    """推送到飞书自定义机器人。buddy_line 为空时只推签到。"""
     color = "green" if overall_ok else "red"
     lines = [
         "**%s**" % title,
         "",
         "**签到**",
         checkin_line,
-        "",
-        "**猫猫旅行**",
-        buddy_line,
     ]
+    if buddy_line:
+        lines += ["", "**猫猫旅行**", buddy_line]
     payload = {
         "msg_type": "interactive",
         "card": {
@@ -354,18 +353,21 @@ def main():
     checkin_ok, checkin = run_checkin(headers, endpoint)
     log("  结论：%s" % checkin["report"])
 
-    # 猫猫独立 try：任何异常都不影响签到结论
-    log("=== 2/2 猫猫旅行 ===")
-    try:
-        buddy = run_buddy(headers, endpoint)
-    except Exception as e:
-        buddy = {"result": "ERROR", "report": "猫猫模块异常（%s: %s）" % (type(e).__name__, e)}
-    log("  结论：%s" % buddy.get("report", ""))
+    # 猫猫旅行已停用（本账号无此功能，接口返回 no active buddy）。
+    # report 置空 → 飞书卡片与结果表只展示签到；如需恢复：取消下方注释并删除赋值行。
+    buddy = {"result": "DISABLED", "report": ""}
+    log("=== 2/2 猫猫旅行：已停用，跳过 ===")
+    # log("=== 2/2 猫猫旅行 ===")
+    # try:
+    #     buddy = run_buddy(headers, endpoint)
+    # except Exception as e:
+    #     buddy = {"result": "ERROR", "report": "猫猫模块异常（%s: %s）" % (type(e).__name__, e)}
+    # log("  结论：%s" % buddy.get("report", ""))
 
     # 整体成败只看签到：签到成功即成功
     overall_ok = checkin_ok
     checkin_line = ("✅ " if checkin_ok else "❌ ") + checkin["report"]
-    buddy_line = ("🐱 " + buddy.get("report", "")) if buddy.get("report") else "🐱 无结论"
+    buddy_line = ("🐱 " + buddy.get("report", "")) if buddy.get("report") else ""
 
     if webhook:
         push_feishu(webhook, "每日自动化", checkin_line, buddy_line, overall_ok)
@@ -384,7 +386,8 @@ def main():
             with open(result_file, "w", encoding="utf-8") as f:
                 f.write("| 项目 | 结论 |\n| --- | --- |\n")
                 f.write("| 签到 | %s |\n" % checkin_line)
-                f.write("| 猫猫旅行 | %s |\n" % buddy_line)
+                if buddy_line:
+                    f.write("| 猫猫旅行 | %s |\n" % buddy_line)
                 f.write("| 整体 | %s |\n" % ("成功（签到已达成）" if overall_ok else "失败（签到未达成）"))
         except OSError as e:
             log("结果文件写入失败：%s" % e)
