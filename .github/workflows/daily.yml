@@ -7,7 +7,7 @@ on:
     #
     # cron 按 UTC 计时。取 01:00 UTC = 北京时间 09:00；
     # 避开整点高负载期，实际触发一般在 09:00~09:30 之间。
-    - cron: "0 22 * * *"
+    - cron: "0 20 * * *"
   workflow_dispatch:
 
 permissions:
