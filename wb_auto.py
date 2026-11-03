@@ -211,6 +211,57 @@ def _fmt_already(status, via="今日已签过"):
     return "%s（%s）" % (via, "，".join(parts)) if parts else via
 
 
+def run_status_only(headers, endpoint):
+    """只查状态、绝不领取。返回 (checked_in, report)；无法判定时 checked_in 为 None。"""
+    scode, sbody = post(endpoint + "/v2/billing/meter/checkin-activity-status", headers)
+    log("  [核查-状态] HTTP %s %s" % (scode, json.dumps(masked(sbody), ensure_ascii=False)))
+
+    if scode == CODE_NO_NETWORK:
+        return None, "网络不可达，无法核查签到状态"
+    if scode in (401, 403):
+        return None, "认证被拒（HTTP %s），token 可能已过期" % scode
+    if not (200 <= scode < 300):
+        return None, "状态接口异常（HTTP %s）" % scode
+
+    status = unwrap(sbody)
+    if dig(status, "active") is False:
+        return None, "签到活动未开启"
+    if dig(status, "today_checked_in") in (True, 1):
+        return True, _fmt_already(status)
+    return False, "今日尚未签到"
+
+
+def push_feishu_remind(webhook, report):
+    """未签到时推送的红色提醒卡片。"""
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "red",
+                "title": {"tag": "plain_text", "content": "⚠️ 今日签到未完成，请补签"},
+            },
+            "elements": [{
+                "tag": "div",
+                "text": {"tag": "lark_md", "content":
+                         "**核查结果**\n%s\n\n请打开 WorkBuddy 左下角手动领取；\n"
+                         "若提示认证异常，说明 token 已过期，双击本机 refresh_secret.bat 刷新即可。" % report},
+            }],
+        },
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(webhook, data=data, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=ssl.create_default_context()) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+            log("  [飞书] HTTP %s %s" % (resp.status, json.dumps(body, ensure_ascii=False)))
+            return body.get("code") == 0
+    except Exception as e:
+        log("  [飞书] 推送失败：%s: %s" % (type(e).__name__, e))
+        return False
+
+
 # ---------------------------------------------------------------- 猫猫
 
 def run_buddy(headers, endpoint):
@@ -335,6 +386,7 @@ def main():
     token = os.environ.get("WB_ACCESS_TOKEN")
     webhook = os.environ.get("FEISHU_WEBHOOK")
     endpoint = os.environ.get("WB_ENDPOINT") or DEFAULT_ENDPOINT
+    mode = (os.environ.get("WB_MODE") or "claim").lower()
 
     if not token:
         log("缺少环境变量 WB_ACCESS_TOKEN（请在本机运行 refresh_token.py 注入 GitHub Secret）")
@@ -348,6 +400,39 @@ def main():
         "Content-Type": "application/json",
         "User-Agent": "WorkBuddy",
     }
+
+    # ---------- 核查模式：只查不领，未签才推送提醒 ----------
+    if mode == "check":
+        log("=== 核查（不领取）：今日签到状态 ===")
+        checked_in, report = run_status_only(headers, endpoint)
+        log("  结论：%s" % report)
+
+        if checked_in is True:
+            log("  已签到，按要求不推送")
+            result_line = "✅ 已签到（%s），未推送" % report
+            exit_code = 0
+        elif checked_in is False:
+            log("  未签到，推送补签提醒")
+            if webhook:
+                push_feishu_remind(webhook, report)
+            result_line = "⚠️ 未签到，已推送补签提醒"
+            exit_code = 1
+        else:
+            log("  状态无法判定，推送异常提醒")
+            if webhook:
+                push_feishu_remind(webhook, report)
+            result_line = "⚠️ 状态无法判定：%s" % report
+            exit_code = 1
+
+        result_file = os.environ.get("WB_RESULT_FILE")
+        if result_file:
+            try:
+                with open(result_file, "w", encoding="utf-8") as f:
+                    f.write("| 项目 | 结论 |\n| --- | --- |\n")
+                    f.write("| 签到核查 | %s |\n" % result_line)
+            except OSError as e:
+                log("结果文件写入失败：%s" % e)
+        return exit_code
 
     log("=== 1/2 签到 ===")
     checkin_ok, checkin = run_checkin(headers, endpoint)

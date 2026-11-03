@@ -5,9 +5,11 @@ on:
     # GitHub 的 cron 是尽力而为：高负载时会延迟，甚至静默丢弃整次运行。
     # 脚本是幂等的：已签过只会返回「今日已签过」，不会重复领取。
     #
-    # cron 按 UTC 计时。取 01:00 UTC = 北京时间 09:00；
-    # 避开整点高负载期，实际触发一般在 09:00~09:30 之间。
+    # 两个时段（cron 按 UTC，括号内为北京时间）：
+    #   20:00 UTC = 04:00 北京 —— 主签到：未签则领取（因 GitHub 延迟，实际多在 06:00~08:00 落地）
+    #   09:00 UTC = 17:00 北京 —— 仅核查：已签静默不推送，未签则推送补签提醒
     - cron: "0 20 * * *"
+    - cron: "0 9 * * *"
   workflow_dispatch:
 
 permissions:
@@ -38,13 +40,15 @@ jobs:
           "$PY" -c 'import sys; print("使用解释器:", sys.executable, sys.version.split()[0])'
           echo "python_path=$PY" >> "$GITHUB_OUTPUT"
 
-      - name: 执行签到与派猫猫
+      - name: 执行签到 / 核查
         id: run
         env:
           WB_ACCESS_TOKEN: ${{ secrets.WB_ACCESS_TOKEN }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           WB_ENDPOINT: https://copilot.tencent.com
           WB_RESULT_FILE: ${{ runner.temp }}/wb_result.json
+          # 17:00 的时段只核查不领取；其余（含手动触发）走正常签到
+          WB_MODE: ${{ (github.event.schedule == '0 9 * * *') && 'check' || 'claim' }}
         run: |
           set -uo pipefail
           PY="${{ steps.py.outputs.python_path }}"
