@@ -211,42 +211,17 @@ def _fmt_already(status, via="今日已签过"):
     return "%s（%s）" % (via, "，".join(parts)) if parts else via
 
 
-def run_status_only(headers, endpoint):
-    """只查状态、绝不领取。返回 (checked_in, report)；无法判定时 checked_in 为 None。"""
-    scode, sbody = post(endpoint + "/v2/billing/meter/checkin-activity-status", headers)
-    log("  [核查-状态] HTTP %s %s" % (scode, json.dumps(masked(sbody), ensure_ascii=False)))
-
-    if scode == CODE_NO_NETWORK:
-        return None, "网络不可达，无法核查签到状态"
-    if scode in (401, 403):
-        return None, "认证被拒（HTTP %s），token 可能已过期" % scode
-    if not (200 <= scode < 300):
-        return None, "状态接口异常（HTTP %s）" % scode
-
-    status = unwrap(sbody)
-    if dig(status, "active") is False:
-        return None, "签到活动未开启"
-    if dig(status, "today_checked_in") in (True, 1):
-        return True, _fmt_already(status)
-    return False, "今日尚未签到"
-
-
-def push_feishu_remind(webhook, report):
-    """未签到时推送的红色提醒卡片。"""
+def push_feishu_card(webhook, color, title, body):
+    """通用卡片推送：color 为 green/red，body 为 lark_md 正文。"""
     payload = {
         "msg_type": "interactive",
         "card": {
             "config": {"wide_screen_mode": True},
             "header": {
-                "template": "red",
-                "title": {"tag": "plain_text", "content": "⚠️ 今日签到未完成，请补签"},
+                "template": color,
+                "title": {"tag": "plain_text", "content": title},
             },
-            "elements": [{
-                "tag": "div",
-                "text": {"tag": "lark_md", "content":
-                         "**核查结果**\n%s\n\n请打开 WorkBuddy 左下角手动领取；\n"
-                         "若提示认证异常，说明 token 已过期，双击本机 refresh_secret.bat 刷新即可。" % report},
-            }],
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": body}}],
         },
     }
     data = json.dumps(payload).encode("utf-8")
@@ -401,27 +376,39 @@ def main():
         "User-Agent": "WorkBuddy",
     }
 
-    # ---------- 核查模式：只查不领，未签才推送提醒 ----------
+    # ---------- 核查模式：已签静默；未签先自动补签，成功/失败分别推送 ----------
     if mode == "check":
-        log("=== 核查（不领取）：今日签到状态 ===")
-        checked_in, report = run_status_only(headers, endpoint)
-        log("  结论：%s" % report)
+        log("=== 核查：已签静默，未签自动补签 ===")
+        checkin_ok, checkin = run_checkin(headers, endpoint)
+        result = checkin.get("result")
+        log("  结论：%s（%s）" % (result, checkin["report"]))
 
-        if checked_in is True:
-            log("  已签到，按要求不推送")
-            result_line = "✅ 已签到（%s），未推送" % report
+        if result in ("ALREADY", "INACTIVE"):
+            # 分支 1：已签到（或活动未开启）→ 静默，不推送
+            log("  今日已签到，按要求静默不推送")
+            result_line = "✅ 已签到，静默（%s）" % checkin["report"]
             exit_code = 0
-        elif checked_in is False:
-            log("  未签到，推送补签提醒")
+        elif result == "CLAIMED":
+            # 分支 2：未签到 → 补签成功 → 推送成功卡片
+            log("  补签成功，推送通知")
             if webhook:
-                push_feishu_remind(webhook, report)
-            result_line = "⚠️ 未签到，已推送补签提醒"
-            exit_code = 1
+                push_feishu_card(
+                    webhook, "green", "✅ 已自动补签",
+                    "**核查结果**\n发现今日未签到，已自动补签成功\n\n"
+                    "**详情**\n%s\n\n说明：主时段未完成，本次由核查时段补上。" % checkin["report"])
+            result_line = "✅ 补签成功，已推送（%s）" % checkin["report"]
+            exit_code = 0
         else:
-            log("  状态无法判定，推送异常提醒")
+            # 分支 3：未签到 → 补签失败/无法判定 → 推送失败卡片
+            log("  补签未成功，推送失败提醒")
             if webhook:
-                push_feishu_remind(webhook, report)
-            result_line = "⚠️ 状态无法判定：%s" % report
+                push_feishu_card(
+                    webhook, "red", "⚠️ 补签失败，请手动处理",
+                    "**核查结果**\n今日未签到，自动补签未成功\n\n"
+                    "**原因**\n%s\n\n请打开 WorkBuddy 左下角手动领取；\n"
+                    "若提示认证异常，说明 token 已过期，双击本机 refresh_secret.bat 刷新即可。"
+                    % checkin["report"])
+            result_line = "⚠️ 补签失败，已推送（%s）" % checkin["report"]
             exit_code = 1
 
         result_file = os.environ.get("WB_RESULT_FILE")
