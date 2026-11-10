@@ -48,7 +48,7 @@ jobs:
           WB_ENDPOINT: https://copilot.tencent.com
           WB_RESULT_FILE: ${{ runner.temp }}/wb_result.json
           # 17:00 的时段只核查不领取；其余（含手动触发）走正常签到
-          WB_MODE: ${{ (github.event.schedule == '0 9 * * *') && 'check' || 'claim' }}
+          WB_MODE: ${{ (github.event.schedule == '0 4 * * *') && 'check' || 'claim' }}
         run: |
           set -uo pipefail
           PY="${{ steps.py.outputs.python_path }}"
